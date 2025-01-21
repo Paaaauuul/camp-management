@@ -1,0 +1,20 @@
+{
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "ESNext",
+        "jsx": "react-jsx",
+        "strict": true,
+        "moduleResolution": "node",
+        "baseUrl": "./",
+        "paths": {
+            "@lib/*": ["src/lib/*"], // Alias for lib
+            "@components/*": ["src/components/*"], // Alias for components
+            "@backend/*": ["../backend/src/*"] // Alias for accessing supabase folder
+        },
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+        "skipLibCheck": true
+    },
+    "include": ["src/**/*"], // Include all files in the src folder
+    "exclude": ["node_modules"]
+}
