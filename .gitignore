@@ -9,8 +9,8 @@ logs/
 *.gz
 
 # Environment
-.env
-.env.local
+# .env
+# .env.local
 
 # Build outputs
 frontend/dist/
