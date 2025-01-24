@@ -1,21 +1,16 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
     isWithinInterval,
     parseISO,
-    differenceInDays,
-    isSameDay,
     format,
     addDays,
 } from "date-fns";
-import clsx from "clsx";
 import { Site, Booking, Reservation, Customer } from "../../types";
 import { TimeIndicator } from "../TimeIndicator";
 import {
     getCustomerById,
     markReservationAsPaid,
-    updateBooking,
     updateBookingCheckInStatus,
-    updateReservation,
 } from "@backend/queries";
 import { ReservationModal } from "../modals/ReservationModal";
 import { BookingContextMenu } from "../BookingContextMenu";
@@ -23,7 +18,8 @@ import { ReservationContextMenu } from "../ReservationContextMenu";
 import { Toast } from "../Toast";
 import { BookingDetails } from "../BookingDetails";
 import { ReservationDetails } from "../ReservationDetails";
-import { CheckSquare, LogOut, Tent } from "lucide-react";
+import { BookingHead } from "./BookingHead";
+import { TableBody } from "./TableBody";
 
 interface CalendarGridProps {
     days: Date[];
@@ -31,6 +27,12 @@ interface CalendarGridProps {
     bookings: Booking[];
     reservations: Reservation[];
     onBookingUpdate?: () => void;
+}
+
+interface IDate {
+    startDate: Date;
+    endDate: Date;
+    siteId: number;
 }
 
 const CalendarGridComponent = (
@@ -46,16 +48,8 @@ const CalendarGridComponent = (
       item: Booking | Reservation;
     } | null>(null);
     const [dragStartPosition, setDragStartPosition] = useState<{ x: number; date: Date } | null>(null);
-    const [selectionBox, setSelectionBox] = useState<{
-      startDate: Date;
-      endDate: Date;
-      siteId: number;
-    } | null>(null);
-    const [newReservation, setNewReservation] = useState<{
-      startDate: Date;
-      endDate: Date;
-      siteId: number;
-    } | null>(null);
+    const [selectionBox, setSelectionBox] = useState<IDate | null>(null);
+    const [newReservation, setNewReservation] = useState<IDate | null>(null);
     const [isDraggingNew, setIsDraggingNew] = useState(false);
     const dragStartRef = useRef<{ date: Date; siteId: number } | null>(null);
     const [selectedBooking, setSelectedBooking] = useState<{ booking: Booking; customer: Customer } | null>(null);
@@ -82,240 +76,46 @@ const CalendarGridComponent = (
       return [...dateBookings, ...datePendingReservations];
     };
   
-    const getBookingWidth = (booking: Booking | Reservation) => {
-      const startDate = parseISO(booking.start_date);
-      const endDate = parseISO(booking.end_date);
-      return (differenceInDays(endDate, startDate) * 120) - 5;
-    };
-  
-    const handleDragStart = (item: Booking | Reservation, e: React.DragEvent) => {
-      if (isResizing) {
-        e.preventDefault();
-        return;
-      }
-  
-      setDraggedItem(item);
-    };
-  
-    const handleDragOver = (e: React.DragEvent, date: Date, siteId: number) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-          if (!dragOverInfo || 
-          dragOverInfo.date.getTime() !== date.getTime() || 
-          dragOverInfo.siteId !== siteId) {
-        setDragOverInfo({ date, siteId });
-      }
-    };
-  
-    // Handle drop
-    const handleDrop = async (e: React.DragEvent, dropDate: Date, dropSiteId: number) => {
-      e.preventDefault();
-      if (!draggedItem) return;
-      
-      // Prevent dropping if nothing changed
-      if (draggedItem.site_id === dropSiteId && 
-          format(dropDate, 'yyyy-MM-dd') === draggedItem.start_date) {
+      // Utility functions
+    const resetDragState = () => {
         setDraggedItem(null);
         setDragOverInfo(null);
-        return;
-      }
-  
-      const originalStart = parseISO(draggedItem.start_date);
-      const originalEnd = parseISO(draggedItem.end_date);
-      const bookingDuration = differenceInDays(originalEnd, originalStart);
-      
-      const newStartDate = format(dropDate, 'yyyy-MM-dd');
-      const newEndDate = format(addDays(dropDate, bookingDuration), 'yyyy-MM-dd');
-  
-      const hasOverlap = (start1: string, end1: string, start2: string, end2: string) => {
-        if (end1 === start2 || end2 === start1) {
-          return false;
-        }
-        return (
-          (start1 <= end2 && end1 >= start2) ||
-          (start2 <= end1 && end2 >= start1)
-        );
-      };
-  
-      try {
-        const conflictingBookings = bookings.filter(booking => 
-          booking.id !== draggedItem.id &&
-          booking.site_id === dropSiteId &&
-          hasOverlap(booking.start_date, booking.end_date, newStartDate, newEndDate)
-        );
-  
-        const conflictingReservations = reservations.filter(reservation =>
-          reservation.id !== draggedItem.id &&
-          reservation.site_id === dropSiteId &&
-          hasOverlap(reservation.start_date, reservation.end_date, newStartDate, newEndDate)
-        );
-  
-        if (conflictingBookings.length > 0 || conflictingReservations.length > 0) {
-          setError('Cannot move: This time slot is already booked');
-          return;
-        }
-  
-        if ('status' in draggedItem && draggedItem.status === 'pending') {
-          await updateReservation(draggedItem.id, {
-            start_date: newStartDate,
-            end_date: newEndDate,
-            site_id: dropSiteId
-          });
-        } else {
-          await updateBooking(draggedItem.id, {
-            start_date: newStartDate,
-            end_date: newEndDate,
-            site_id: dropSiteId
-          });
-        }
-        
-        onBookingUpdate?.();
-      } catch (error) {
-        console.error('Error updating booking:', error);
-        alert('Failed to move. Please try again.');
-      }
-  
-      setDraggedItem(null);
-      setDragOverInfo(null);
     };
-    const handleDragEnd = () => {
-      setDraggedItem(null);
-      setDragOverInfo(null);
+    const handleDragEnd = resetDragState;
+    
+    const checkConflicts = (siteId: number, itemId: number, start: string, end: string) => {
+    const hasOverlap = (start1: string, end1: string, start2: string, end2: string) =>
+        !(end1 === start2 || end2 === start1) &&
+        ((start1 <= end2 && end1 >= start2) || (start2 <= end1 && end2 >= start1));
+    
+    const isConflicting = (entry: Booking | Reservation) =>
+        entry.id !== itemId &&
+        entry.site_id === siteId &&
+        hasOverlap(start, end, entry.start_date, entry.end_date);
+    
+        return bookings.some(isConflicting) || reservations.some(isConflicting);
     };
-    const handleResizeStart = async (
-      e: React.MouseEvent,
-      item: Booking | Reservation,
-      edge: 'start' | 'end',
-    ) => {
-      e.stopPropagation();
-      e.preventDefault();
       
-      if (!('status' in item) && item.check_in_status === 'checked_out') {
-        setError('Cannot modify a checked out booking');
-        return;
-      }
-      
-      setIsResizing(true);
-      const initialX = e.clientX;
-      const initialDate = edge === 'start' 
-        ? parseISO(item.start_date)
-        : parseISO(item.end_date);
-      
-      const handleMouseMove = (e: MouseEvent) => {
-        const deltaX = e.clientX - initialX; 
-        const daysDelta = Math.round(deltaX / 120); // 120px per day
-        const newDate = addDays(initialDate, daysDelta); 
-        const formattedDate = format(newDate, 'yyyy-MM-dd');
-        
-        if (edge === 'start') {
-          const endDate = parseISO(item.end_date);
-          if (newDate >= endDate) return;
-        } else {
-          const startDate = parseISO(item.start_date);
-          if (newDate <= startDate) return;
-        }
-              const hasOverlap = (start1: string, end1: string, start2: string, end2: string) => {
-          if (end1 === start2 || end2 === start1) {
-            return false;
+    const handleItemClick = async (item: Booking | Reservation, type: "booking" | "reservation") => {
+        try {
+          if (!item.customer_id) {
+            setError(`No customer information available for this ${type}`);
+            return;
           }
-          return (
-            (start1 < end2 && end1 > start2) ||
-            (start2 < end1 && end2 > start1)
-          );
-        };
-        const conflictingBookings = bookings.filter(b => 
-          b.id !== item.id &&
-          b.site_id === item.site_id &&
-          hasOverlap(
-            edge === 'start' ? formattedDate : item.start_date,
-            edge === 'end' ? formattedDate : item.end_date,
-            b.start_date,
-            b.end_date
-          )
-        );
-        const conflictingReservations = reservations.filter(r => 
-          r.id !== item.id &&
-          r.site_id === item.site_id &&
-          hasOverlap(
-            edge === 'start' ? formattedDate : item.start_date,
-            edge === 'end' ? formattedDate : item.end_date,
-            r.start_date,
-            r.end_date
-          )
-        );
-        
-        if (conflictingBookings.length > 0 || conflictingReservations.length > 0) {
-          setError('Cannot resize: This would overlap with another booking');
-          return;
+          const customer = await getCustomerById(item.customer_id);
+          if (customer) {
+            if (type === "booking") {
+              setSelectedBooking({ booking: item as Booking, customer });
+            } else {
+              setSelectedReservation({ reservation: item as Reservation, customer });
+            }
+          } else {
+            setError(`Could not find customer information for this ${type}`);
+          }
+        } catch (error) {
+          console.error(`Error fetching customer for ${type}:`, error);
+          setError(`Failed to load ${type} details`);
         }
-        
-        // Update booking or reservation
-        const updatePromise = 'status' in item && item.status === 'pending'
-          ? updateReservation(item.id, {
-              start_date: edge === 'start' ? formattedDate : item.start_date,
-              end_date: edge === 'end' ? formattedDate : item.end_date,
-              site_id: item.site_id
-            })
-          : updateBooking(item.id, {
-              start_date: edge === 'start' ? formattedDate : item.start_date,
-              end_date: edge === 'end' ? formattedDate : item.end_date,
-              site_id: item.site_id
-            });
-  
-        updatePromise.then(() => {
-          onBookingUpdate?.();
-        }).catch(error => {
-          console.error('Error updating booking:', error);
-          setError('Failed to update');
-        });
-      };
-      
-      const handleMouseUp = () => {
-        setIsResizing(false);
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-      };
-      
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-    };
-  
-    const handleBookingClick = async (booking: Booking) => {
-      try {
-        if (!booking.customer_id) {
-          setError('No customer information available for this booking');
-          return;
-        }
-  
-        const customer = await getCustomerById(booking.customer_id);
-        if (customer) {
-          setSelectedBooking({ booking, customer });
-        } else {
-          setError('Could not find customer information');
-        }
-      } catch (error) {
-        console.error('Error fetching customer:', error);
-        setError('Failed to load booking details');
-      }
-    };
-  
-    const handleReservationClick = async (reservation: Reservation) => {
-      try {
-        if (!reservation.customer_id) {
-          setError('No customer information available for this reservation');
-          return;
-        }
-  
-        const customer = await getCustomerById(reservation.customer_id);
-        if (customer) {
-          setSelectedReservation({ reservation, customer });
-        } else {
-          setError('Could not find customer information');
-        }
-      } catch (error) {
-        console.error('Error fetching customer:', error);
-        setError('Failed to load reservation details');
-      }
     };
   
     const handleContextMenu = async (e: React.MouseEvent, item: Booking | Reservation) => {
@@ -329,45 +129,29 @@ const CalendarGridComponent = (
         item
       });
     };
-  
-    const handleCheckIn = async (booking: Booking) => {
-      try {
-        if (booking.check_in_status === 'checked_in') {
-          setError('Booking is already checked in');
-          return;
+
+    const handleCheckStatusUpdate = async (booking: Booking, status: "checked_in" | "checked_out") => {
+        const { check_in_status:check } = booking;
+        try {
+          if (status === "checked_in") {
+            if (check === "checked_in" || check === "checked_out") {
+              setError(check === "checked_in" ? "Booking is already checked in" : "Cannot check in a checked-out booking");
+              return;
+            }
+          }
+          if (status === "checked_out") {
+            if (check === "checked_out" || check === "pending") {
+              setError(check === "checked_out" ? "Booking is already checked out" : "Cannot check out a booking that has not been checked in");
+              return;
+            }
+          }
+          await updateBookingCheckInStatus(booking.id, status);
+          setContextMenu(null);
+          onBookingUpdate?.();
+        } catch (error) {
+          console.error(`Error updating booking to ${status}:`, error);
+          setError(error instanceof Error ? error.message : `Failed to update ${status} status`);
         }
-        
-        if (booking.check_in_status === 'checked_out') {
-          setError('Cannot check in a checked out booking');
-          return;
-        }
-  
-        await updateBookingCheckInStatus(booking.id, 'checked_in');
-        setContextMenu(null);
-        onBookingUpdate?.();
-      } catch (error) {
-        console.error('Error checking in booking:', error);
-        setError(error instanceof Error ? error.message : 'Failed to update check-in status');
-      }
-    };
-  
-    const handleCheckOut = async (booking: Booking) => {
-      try {
-        if (booking.check_in_status === 'checked_out') {
-          setError('Booking is already checked out');
-          return;
-        }
-        if (booking.check_in_status === 'pending') {
-          setError('Cannot check out a booking that has not been checked in');
-          return;
-        }
-        await updateBookingCheckInStatus(booking.id, 'checked_out');
-        setContextMenu(null);
-        onBookingUpdate?.();
-      } catch (error) {
-        console.error('Error checking out booking:', error);
-        setError(error instanceof Error ? error.message : 'Failed to update check-out status');
-      }
     };
   
     const handleMarkAsPaid = async (reservation: Reservation) => {
@@ -417,7 +201,6 @@ const CalendarGridComponent = (
     // Handle mouse up to finish creating new reservation
     const handleMouseUp = () => {
       if (isDraggingNew && selectionBox) {
-        // Only create reservation if we've actually dragged
         const startDate = selectionBox.startDate < selectionBox.endDate 
           ? selectionBox.startDate 
           : selectionBox.endDate;
@@ -437,22 +220,17 @@ const CalendarGridComponent = (
       setDragStartPosition(null);
     };
   
-    // Add mouse up listener to handle cases where mouse is released outside the grid
-    React.useEffect(() => {
+    useEffect(() => {
       if (isDraggingNew) {
         const handleGlobalMouseUp = () => {
           handleMouseUp();
         };
-        
         window.addEventListener('mouseup', handleGlobalMouseUp);
         return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
       }
     }, [isDraggingNew]);
   
-    const handleDelete = async () => {
-      // TODO: Implement delete functionality
-      console.log('Delete booking:', contextMenu?.item.id);
-    };
+    const handleDelete = async () => {};
   
     return (
       <div className="relative">
@@ -463,207 +241,53 @@ const CalendarGridComponent = (
             onClose={() => setError(null)}
           />
         )}
-        {/* Fixed left column showing site names */}
-        <div className="absolute left-0 top-0 z-20 w-[200px] bg-white">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr>
-                <th className="border-b border-r border-gray-200 bg-gray-50 items-center p-3 text-left font-bold min-w-[200px]">
-                  <div className="flex items-center h-[44px] pl-2">
-                    Site
-                  </div>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sites.map((site) => (
-                <tr key={site.id} className="group">
-                  <td className="border-b border-r border-gray-200 bg-gray-50 p-3">
-                    <div className="flex items-center space-x-2 h-[23px]">
-                      <Tent className="h-5 w-5 text-gray-400" />
-                      <div className="font-medium">
-                        <div className="text-gray-900">{site.name}</div>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <BookingHead sites={sites} />
         {/* Scrollable calendar grid */}
         <div ref={ref} className="overflow-x-auto ml-[200px]">
-          <div className="relative">
-            {/* Time indicator line - only shown if today is visible */}
-            <TimeIndicator dayWidth={120} days={days} />
-            <table className="w-full border-collapse">
-              {/* Calendar header showing dates */}
-              <thead>
-                <tr>
-                  {days.map((day) => (
-                    <th
-                      key={day.toString()}
-                      className="border-b border-r border-gray-200 bg-gray-50 p-3 text-left min-w-[120px]"
-                    >
-                      <div className="flex flex-col">
-                        <span className="text-sm font-normal text-gray-500">
-                          {format(day, 'MMM')}
-                        </span>
-                        <div className="flex items-baseline space-x-1">
-                          <span className="font-semibold">{format(day, 'd')}</span>
-                          <span className="text-sm text-gray-500">{format(day, 'EEE')}</span>
-                        </div>
-                      </div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {/* Main calendar grid showing bookings */}
-                {sites.map((site) => (
-                  <tr key={site.id} className="group">
+            <div className="relative">
+                <TimeIndicator dayWidth={120} days={days} />
+                <table className="w-full border-collapse">
+                <thead>
+                    <tr>
                     {days.map((day) => (
-                      <td
+                        <th
                         key={day.toString()}
-                        className={clsx(
-                          'border-b border-r border-gray-200 p-1 h-12',
-                          'relative select-none',
-                          dragOverInfo?.date === day && dragOverInfo.siteId === site.id
-                            ? 'bg-blue-50'
-                            : 'group-hover:bg-gray-50',
-                          selectionBox && site.id === selectionBox.siteId && 
-                          isWithinInterval(day, {
-                             start: selectionBox.startDate,
-                             end: selectionBox.endDate
-                          }) && 'selection-animation'
-                        )}
-                        onDragOver={(e) => handleDragOver(e, day, site.id)}
-                        onDrop={(e) => handleDrop(e, day, site.id)}
-                        onMouseDown={(e) => handleMouseDown(e, day, site.id)}
-                        onMouseEnter={(e) => handleMouseMove(e, day, site.id)}
-                      >
-                          {/* IIFE to handle booking display logic */}
-                          {(() => {
-                            const dayBookings = getBookingForDate(day, site.id);
-                            if (dayBookings.length > 0) {
-                              // Map through all bookings for this day/site
-                              return dayBookings.map((booking, index) => {
-                                // Only render booking on its start date
-                                if (isSameDay(parseISO(booking.start_date), day)) {
-                                  const width = getBookingWidth(booking);
-                                  return (
-                                    // Booking display box
-                                    <div 
-                                      key={`${booking.id}-${site.id}-${day.toString()}`}
-                                      className={clsx(
-                                        "absolute rounded p-1 z-10 h-[40px] transition-opacity",
-                                        'group/booking',
-                                        'status' in booking
-                                          ? 'bg-white border-2 border-green-600 text-black hover:bg-green-50'
-                                          : booking.check_in_status === 'pending'
-                                            ? 'bg-green-100 border-2 border-green-600 text-black hover:bg-green-200'
-                                            : 'bg-green-800 text-white hover:bg-green-900',
-                                        draggedItem?.id === booking.id ? "cursor-grabbing opacity-50" : "cursor-grab",
-                                        isResizing && "pointer-events-none"
-                                      )}
-                                      draggable
-                                      onDragStart={(e) => {
-                                        if (e.detail === 2) {
-                                          e.preventDefault();
-                                          if ('status' in booking) {
-                                            handleReservationClick(booking as Reservation);
-                                          } else {
-                                            handleBookingClick(booking as Booking);
-                                          }
-                                          return;
-                                        }
-                                        e.stopPropagation();
-                                        handleDragStart(booking, e);
-                                      }}
-                                      onDragEnd={handleDragEnd}
-                                      onContextMenu={(e) => {
-                                        handleContextMenu(e, booking);
-                                      }}
-                                      onDoubleClick={() => {
-                                        if ('status' in booking) {
-                                          handleReservationClick(booking as Reservation);
-                                        } else {
-                                          handleBookingClick(booking as Booking);
-                                        }
-                                      }}
-                                      style={{ 
-                                        // Position at 55% of cell width for visual alignment
-                                        left: '55%',
-                                        width: `${width}px`,
-                                        top: '4px',
-                                        transform: `translateY(${index * -0}px)`
-                                      }}
-                                      title="Drag to move booking"
-                                    >
-                                      {/* Guest name with ellipsis for overflow */}
-                                      {/* Left resize handle */}
-                                      <div 
-                                        className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize resize-handle opacity-0 group-hover/booking:opacity-100 transition-opacity"
-                                        onMouseDown={(e) => {
-                                          e.stopPropagation();
-                                          handleResizeStart(e, booking, 'start');
-                                        }}
-                                        title="Drag to change start date"
-                                      >
-                                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-green-600 opacity-50">
-                                        </div>
-                                      </div>
-                                      {/* Right resize handle */}
-                                      <div 
-                                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize resize-handle opacity-0 group-hover/booking:opacity-100 transition-opacity"
-                                        onMouseDown={(e) => {
-                                          e.stopPropagation();
-                                          handleResizeStart(e, booking, 'end');
-                                        }}
-                                        title="Drag to change end date"
-                                      >
-                                        <div className="absolute right-0 top-0 bottom-0 w-1 bg-green-600 opacity-50">
-                                        </div>
-                                      </div>
-                                      <span className={clsx(
-                                        "text-sm font-medium line-clamp-2 h-full flex items-center pl-2 select-none",
-                                        !('status' in booking) && booking.check_in_status === 'pending' ? 'text-black' : ''
-                                      )}>
-                                       {booking.customers?.last_name || ''}
-                                      </span>
-                                      {'status' in booking ? null : (
-                                        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                                          {booking.check_in_status === 'checked_in' ? (
-                                            <CheckSquare className="h-4 w-4 text-white" />
-                                          ) : booking.check_in_status === 'checked_out' ? (
-                                            <LogOut className="h-4 w-4 text-gray-300" />
-                                          ) : (
-                                            <div className={clsx(
-                                              'w-2 h-2 rounded-full',
-                                            booking.check_in_status === 'checked_in'
-                                              ? 'bg-blue-400'
-                                              : booking.check_in_status === 'checked_out'
-                                                ? 'bg-gray-300'
-                                                : 'bg-green-300'
-                                            )} />
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                }
-                                return null;
-                              });
-                            }
-                            return null;
-                          })()}
-                      </td>
+                        className="border-b border-r border-gray-200 bg-gray-50 p-3 text-left min-w-[120px]"
+                        >
+                        <div className="flex flex-col">
+                            <span className="text-sm font-normal text-gray-500">{format(day, 'MMM')}</span>
+                            <div className="flex items-baseline space-x-1">
+                            <span className="font-semibold">{format(day, 'd')}</span>
+                            <span className="text-sm text-gray-500">{format(day, 'EEE')}</span>
+                            </div>
+                        </div>
+                        </th>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    </tr>
+                </thead>
+                <TableBody
+                    sites={sites}
+                    days={days}
+                    dragOverInfo={dragOverInfo}
+                    setDragOverInfo={setDragOverInfo}
+                    selectionBox={selectionBox}
+                    handleMouseDown={handleMouseDown}
+                    handleMouseMove={handleMouseMove}
+                    getBookingForDate={getBookingForDate}
+                    draggedItem={draggedItem}
+                    isResizing={isResizing}
+                    setDraggedItem={setDraggedItem}
+                    handleDragEnd={handleDragEnd}
+                    handleContextMenu={handleContextMenu}
+                    handleItemClick={handleItemClick}
+                    setIsResizing={setIsResizing}
+                    setError={setError}
+                    onBookingUpdate={onBookingUpdate}
+                    checkConflicts={checkConflicts}
+                    resetDragState={resetDragState}
+                />
+                </table>
+            </div>
         </div>
         {contextMenu && (
           'status' in contextMenu.item ? (
@@ -672,7 +296,7 @@ const CalendarGridComponent = (
               y={contextMenu.y}
               onClose={() => setContextMenu(null)}
               onEdit={() => {
-                handleReservationClick(contextMenu.item as Reservation);
+                handleItemClick(contextMenu.item as Reservation, "reservation");
                 setContextMenu(null);
               }}
               onConfirm={async () => {
@@ -691,11 +315,11 @@ const CalendarGridComponent = (
               booking={contextMenu.item as Booking}
               onClose={() => setContextMenu(null)}
               onEdit={() => {
-                handleBookingClick(contextMenu.item as Booking);
+                handleItemClick(contextMenu.item as Booking, "booking");
                 setContextMenu(null);
               }}
-              onCheckIn={() => handleCheckIn(contextMenu.item as Booking)}
-              onCheckOut={() => handleCheckOut(contextMenu.item as Booking)}
+              onCheckIn={() => handleCheckStatusUpdate(contextMenu.item as Booking, 'checked_in')}
+              onCheckOut={() => handleCheckStatusUpdate(contextMenu.item as Booking, 'checked_out')}
               onDelete={handleDelete}
             />
           )
