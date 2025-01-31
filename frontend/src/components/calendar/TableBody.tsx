@@ -249,9 +249,7 @@ export const TableBody = ({
 
                                     return (
                                         <div
-                                            key={`${booking.id}-${
-                                                site.id
-                                            }-${day.toString()}`}
+                                            key={index}
                                             className={clsx(
                                                 "absolute rounded p-1 z-10 h-[40px] transition-opacity",
                                                 "group/booking",
